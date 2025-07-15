@@ -19,9 +19,9 @@ double distanciaAtual;
 double rpmSaida; 
 
 // --- Constantes de Sintonia do PID ---
-double Kp = 10.0;
-double Ki = 5.0;
-double Kd = 10.0;
+double Kp = 1.428;
+double Ki = 0.015;
+double Kd = 0.0;
 
 const float ZONA_MORTA_CM = 0.5; // Zona morta para evitar oscilação
 
