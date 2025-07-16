@@ -19,21 +19,14 @@ double distanciaAtual;
 double rpmSaida; 
 
 // --- Constantes de Sintonia do PID ---
-double Kp = 1.129;
-double Ki = 0.414;
-double Kd = 0.340;
+double Kp = 1.428;
+double Ki = 0.015;
+double Kd = 0;
 
 const float ZONA_MORTA_CM = 0.5; // Zona morta para evitar oscilação
 
 // --- Objeto PID ---
 PID myPID(&distanciaAtual, &rpmSaida, &setpoint, Kp, Ki, Kd, DIRECT);
-
-// --- VARIÁVEIS PARA ALTERNAR O SETPOINT ---
-// ***** ALTERAÇÃO AQUI *****
-const long INTERVALO_TROCA_MS = 15000; // Alterna a cada 15 segundos (15000 ms)
-unsigned long ultimoTempoTroca = 0;     // Armazena o tempo da última troca
-bool setpointAtualE15 = true;           // Controla qual é o setpoint atual (true=15, false=10)
-
 
 float lerDistanciaBruta(); // Declaração da função auxiliar
 
@@ -46,7 +39,7 @@ void setup() {
   // --- Pré-aquecimento do filtro da média móvel ---
   Serial.println("Aquecendo sensor e filtro de media movel...");
   float primeiraLeitura = 0;
-  while (primeiraLeitura <= 6 || primeiraLeitura > 20) {
+  while (primeiraLeitura <= 0 || primeiraLeitura > 400) {
     primeiraLeitura = lerDistanciaBruta(); // Lê um valor bruto inicial
     delay(50); // Espera um pouco entre tentativas
   }
@@ -57,10 +50,10 @@ void setup() {
   Serial.println("Filtro inicializado.");
   
   Serial.println("Sistema de Controle PID Iniciado.");
-  Serial.println("O setpoint alternara automaticamente entre 10cm e 15cm a cada 15 segundos.");
+  Serial.println("Digite a distancia desejada (cm) no monitor serial e pressione Enter.");
 
-  // Define o setpoint inicial para 15cm
-  setpoint = 15.0;
+  // Define um setpoint inicial
+  setpoint = 14.0;
 
   myPID.SetMode(AUTOMATIC);
   myPID.SetSampleTime(20);
@@ -68,24 +61,16 @@ void setup() {
 }
 
 void loop() {
-  // --- Lógica para alternar o setpoint automaticamente ---
-  // Verifica se já se passaram 'INTERVALO_TROCA_MS' milissegundos desde a última troca
-  if (millis() - ultimoTempoTroca >= INTERVALO_TROCA_MS) {
-    ultimoTempoTroca = millis(); // Reseta o cronômetro
-
-    if (setpointAtualE15) {
-      // Se o setpoint era 15, muda para 10
-      setpoint = 10.0;
-      setpointAtualE15 = false;
-    } else {
-      // Se o setpoint era 10, muda para 15
-      setpoint = 15.0;
-      setpointAtualE15 = true;
+  if (Serial.available() > 0) {
+    float novoSetpoint = Serial.parseFloat();
+    if (novoSetpoint > 0 && novoSetpoint < 400) {
+      setpoint = novoSetpoint;
+      Serial.print(">>> Novo setpoint definido: ");
+      Serial.println(setpoint);
     }
-    Serial.print(">>> Setpoint alternado para: ");
-    Serial.println(setpoint);
+    while(Serial.available() > 0) { Serial.read(); }
   }
-  
+
   // A chamada da função permanece a mesma, mas agora ela retorna um valor filtrado
   distanciaAtual = lerDistanciaCm();
   double erro = setpoint - distanciaAtual;
@@ -122,24 +107,39 @@ void moverMotorRpm(float rpm) {
   }
 }
 
+/**
+ * @brief Lê a distância do sensor e retorna uma média móvel para suavizar os valores.
+ * @return A distância média móvel em centímetros.
+ */
 float lerDistanciaCm() {
+  // 1. Obtém a leitura bruta do sensor
   float novaLeitura = lerDistanciaBruta();
 
-  if (novaLeitura <= 0 || novaLeitura > 400) {
-    return distanciaAtual;
+  // 2. Valida a nova leitura. Se for inválida, ignora e retorna a última média.
+  if (novaLeitura <= 6 || novaLeitura > 20) {
+    return distanciaAtual; // Retorna a última média válida
   }
 
+  // 3. Adiciona a nova leitura ao array
   leiturasDistancia[indiceLeitura] = novaLeitura;
+
+  // 4. Atualiza o índice para a próxima leitura, de forma circular
   indiceLeitura = (indiceLeitura + 1) % TAMANHO_MEDIA_MOVEL;
 
+  // 5. Calcula a soma de todas as leituras no array
   float soma = 0;
   for (int i = 0; i < TAMANHO_MEDIA_MOVEL; i++) {
     soma += leiturasDistancia[i];
   }
 
+  // 6. Retorna a média
   return soma / TAMANHO_MEDIA_MOVEL;
 }
 
+/**
+ * @brief Realiza a medição física da distância com o sensor HC-SR04.
+ * @return A distância "bruta" medida em cm, sem filtro.
+ */
 float lerDistanciaBruta() {
   digitalWrite(PIN_TRIG, LOW);
   delayMicroseconds(2);
@@ -158,7 +158,7 @@ void imprimirDados() {
     Serial.print("Setpoint: ");
     Serial.print(setpoint);
     Serial.print(" cm | Atual (filtrado): ");
-    Serial.print(distanciaAtual, 2);
+    Serial.print(distanciaAtual, 2); // Imprime com 2 casas decimais
     Serial.print(" cm | Saida: ");
     Serial.print(rpmSaida);
     Serial.println(" RPM");
