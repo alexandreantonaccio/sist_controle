@@ -30,9 +30,9 @@ PID myPID(&distanciaAtual, &rpmSaida, &setpoint, Kp, Ki, Kd, DIRECT);
 
 // --- VARIÁVEIS PARA ALTERNAR O SETPOINT ---
 // ***** ALTERAÇÃO AQUI *****
-const long INTERVALO_TROCA_MS = 15000; // Alterna a cada 15 segundos (15000 ms)
+const long INTERVALO_TROCA_MS = 30000; // Alterna a cada 30 segundos 
 unsigned long ultimoTempoTroca = 0;     // Armazena o tempo da última troca
-bool setpointAtualE15 = true;           // Controla qual é o setpoint atual (true=15, false=10)
+bool setpointAtualE15 = true;       
 
 
 float lerDistanciaBruta(); // Declaração da função auxiliar
