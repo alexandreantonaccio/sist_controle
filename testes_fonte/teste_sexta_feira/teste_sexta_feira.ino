@@ -25,14 +25,14 @@ double Ki = 0.414;
 double Kd = 0.340;
 
 // --- Parâmetros de Controle Adicionais ---
-const float ZONA_MORTA_CM = 0.2; // Se o erro for menor que isso, o motor para.
-const float RPM_MINIMO = 1.0;    // RPM mínimo para acionar o motor
+const float ZONA_MORTA_CM = 0.1; // Se o erro for menor que isso, o motor para.
+const float RPM_MINIMO = 0.5;    // RPM mínimo para acionar o motor
 
 // --- Objeto PID ---
 PID myPID(&distanciaAtual, &rpmSaida, &setpoint, Kp, Ki, Kd, DIRECT);
 
 // --- Variáveis de Controle de Teste ---
-const long INTERVALO_TROCA_MS = 30000; // Alterna o setpoint a cada 30 segundos
+const long INTERVALO_TROCA_MS = 70000; // Alterna o setpoint a cada 60 segundos
 unsigned long ultimoTempoTroca = 0;
 bool setpointAtualE15 = true;
 

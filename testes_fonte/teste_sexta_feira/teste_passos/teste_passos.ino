@@ -1,42 +1,43 @@
 #include <Stepper.h>
-#include <SimpleKalmanFilter.h>
+#include <SimpleKalmanFilter.h> // Biblioteca para o Filtro de Kalman
+#include <math.h>              // Incluído para a função abs()
 
-// ==============================================================================
-// --- CONFIGURAÇÕES FÍSICAS E DO ATUADOR ---
-// ==============================================================================
-// --- Motor de Passo ---
-const int PASSOS_MOTOR = 200; // Passos por revolução do seu motor
-Stepper myStepper(PASSOS_MOTOR, 4, 5, 6, 7); // Pinos do driver (IN1, IN2, IN3, IN4)
+// --- Configurações do Motor de Passo ---
+const int PASSOS_MOTOR = 200; // Passos por revolução para o seu motor
+Stepper myStepper(PASSOS_MOTOR, 4, 5, 6, 7); // Pinos do driver do motor (IN1, IN2, IN3, IN4)
 
-// --- Calibração Mecânica (CRÍTICO) ---
-// Com base na sua informação: 200 passos = 4 cm de deslocamento.
-const float PASSOS_POR_CM = 50.0; // (200 passos / 4 cm)
+// --- Constante de Conversão ---
+const float PASSOS_POR_CM = (float)PASSOS_MOTOR / 4.0; // 50.0 passos/cm
 
-// --- Sensor Ultrassônico ---
+// --- Configurações do Sensor Ultrassônico ---
 const int PIN_TRIG = 9;
 const int PIN_ECHO = 10;
 
-// ==============================================================================
-// --- CONFIGURAÇÕES DO CONTROLADOR ---
-// ==============================================================================
-// --- Filtro de Kalman ---
-SimpleKalmanFilter kalmanFilter(2.0, 2.0, 0.1); // Parâmetros (measurement_uncertainty, estimation_uncertainty, process_noise)
+// --- Configurações do Filtro de Kalman ---
+SimpleKalmanFilter kalmanFilter(2.0, 2.0, 0.1); 
 
 // --- Variáveis de Controle ---
-double setpoint_cm;       // O valor desejado (distância em cm)
-double distanciaAtual_cm; // O valor medido e filtrado (em cm)
+double setpointCm = 15.0;
+double distanciaAtualCm;
+int direcaoMotor = 0; // 0=Parado, 1=Avançar, -1=Recuar
+int velocidadeAtualRpm = 0; // Para monitoramento no Serial
 
-// --- Parâmetros de Operação do Controle ---
-const int VELOCIDADE_AJUSTE_RPM = 60;   // Velocidade constante em que o motor executará os passos
-const float TOLERANCIA_CM = 0.1;        // Faixa de erro aceitável (em cm). Se o erro for menor, o motor não se move.
-const int DELAY_ESTABILIZACAO_MS = 250; // Tempo de espera após um movimento para as vibrações mecânicas cessarem.
+// --- Parâmetros de Controle Avançado ---
+const float ZONA_MORTA_CM = 0.1;      // Zona morta de 0.1cm. Se o erro for menor, o motor para.
+const float ZONA_CALMA_CM = 1.0;      // Zona de transição para velocidade lenta (1.0 cm de margem)
 
-// ==============================================================================
-// --- VARIÁVEIS DE TESTE E CONTROLE DE TEMPO ---
-// ==============================================================================
-const long INTERVALO_TROCA_MS = 30000; // Alterna o setpoint a cada 30 segundos para teste
+// --- !! MUDANÇA PRINCIPAL: DUAS VELOCIDADES !! ---
+const int VELOCIDADE_RAPIDA_RPM = 60; // Velocidade para grandes distâncias
+const int VELOCidade_AJUSTE_RPM = 15; // Velocidade lenta para ajuste fino
+
+// --- Variáveis de Controle de Teste ---
+const long INTERVALO_TROCA_MS = 45000;
 unsigned long ultimoTempoTroca = 0;
 bool setpointAtualE15 = true;
+
+// --- Variáveis para Desacoplamento de Tarefas ---
+unsigned long ultimoTempoLeitura = 0;
+const long INTERVALO_LEITURA_MS = 40; // Intervalo para a lógica de decisão
 
 // --- Declarações de Funções Auxiliares ---
 float lerDistanciaBruta();
@@ -49,75 +50,80 @@ void setup() {
   
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
-
-  // Define a velocidade constante do motor que será usada nos movimentos
-  myStepper.setSpeed(VELOCIDADE_AJUSTE_RPM);
   
-  // --- Inicialização do sensor ---
-  Serial.println("Inicializando sensor...");
-  distanciaAtual_cm = lerDistanciaCm();
-  // Garante que a primeira leitura seja válida antes de continuar
-  while (distanciaAtual_cm <= 0 || distanciaAtual_cm > 400) {
+  Serial.println("Inicializando sensor e Filtro de Kalman...");
+  float primeiraLeitura = 0;
+  while (primeiraLeitura <= 0 || primeiraLeitura > 400) {
+    primeiraLeitura = lerDistanciaBruta();
     delay(100);
-    distanciaAtual_cm = lerDistanciaCm();
   }
-  Serial.print("Distancia inicial: ");
-  Serial.println(distanciaAtual_cm);
   
-  // Define o setpoint inicial
-  setpoint_cm = 15.0;
+  distanciaAtualCm = kalmanFilter.updateEstimate(primeiraLeitura);
   
-  Serial.println("Sistema de Controle Posicional Direto Iniciado.");
+  Serial.print("Filtro de Kalman inicializado com distancia: ");
+  Serial.println(distanciaAtualCm);
+  
+  Serial.println("Sistema de Controle com Duas Velocidades Iniciado.");
 }
 
 void loop() {
-  // --- LÓGICA DE CONTROLE POSICIONAL DIRETO ---
+  unsigned long agora = millis();
+  
+  // --- TAREFA 1: LÓGICA DE DECISÃO (executa a cada 40ms) ---
+  if (agora - ultimoTempoLeitura >= INTERVALO_LEITURA_MS) {
+    ultimoTempoLeitura = agora;
 
-  // 1. LÊ a posição atual do sistema.
-  distanciaAtual_cm = lerDistanciaCm();
-  imprimirDados(); // Imprime o estado atual
+    distanciaAtualCm = lerDistanciaCm();
+    double erroCm = setpointCm - distanciaAtualCm;
 
-  // 2. CALCULA o erro de posição.
-  double erro_cm = setpoint_cm - distanciaAtual_cm;
-
-  // 3. VERIFICA se a correção é necessária (se o erro está fora da tolerância).
-  if (abs(erro_cm) > TOLERANCIA_CM) {
-    // 4. CALCULA o número total de passos necessários para corrigir o erro.
-    long passosParaMover = round(erro_cm * PASSOS_POR_CM);
-    
-    Serial.print(">>> Correcao necessaria! Erro: ");
-    Serial.print(erro_cm, 2);
-    Serial.print(" cm. Movendo ");
-    Serial.print(passosParaMover);
-    Serial.println(" passos.");
-
-    // 5. EXECUTA o movimento completo. A função step() é BLOQUEANTE.
-    // O código vai pausar aqui até que todos os passos sejam concluídos.
-    myStepper.step(passosParaMover);
-
-    // 6. ESPERA um momento para o sistema estabilizar mecanicamente.
-    delay(DELAY_ESTABILIZACAO_MS);
+    // LÓGICA 1: Erro desprezível (dentro da zona morta). Objetivo alcançado.
+    if (abs(erroCm) < ZONA_MORTA_CM) {
+      direcaoMotor = 0;
+      velocidadeAtualRpm = 0;
+    }
+    // LÓGICA 2: Erro grande (fora da zona calma). Movimento em velocidade RÁPIDA.
+    else if (abs(erroCm) >= ZONA_CALMA_CM) {
+      myStepper.setSpeed(VELOCIDADE_RAPIDA_RPM);
+      direcaoMotor = (erroCm > 0) ? 1 : -1;
+      velocidadeAtualRpm = VELOCIDADE_RAPIDA_RPM;
+    }
+    // LÓGICA 3: Erro pequeno (dentro da zona calma). Movimento em velocidade LENTA.
+    else {
+      myStepper.setSpeed(VELOCidade_AJUSTE_RPM);
+      direcaoMotor = (erroCm > 0) ? 1 : -1;
+      velocidadeAtualRpm = VELOCidade_AJUSTE_RPM;
+    }
   }
 
-  // Após a verificação (e possível correção), o motor é desligado e o ciclo recomeça.
-  desligarMotor();
+  // --- TAREFA 2: ATUAÇÃO DO MOTOR (executa o mais rápido possível) ---
+  if (direcaoMotor != 0) {
+    // Ação: Se a decisão for mover, dê um passo na direção definida.
+    // Como esta linha está fora do timer de 40ms, ela será chamada continuamente,
+    // fazendo o motor girar na velocidade definida em setSpeed().
+    myStepper.step(direcaoMotor);
+  } else {
+    // Ação: Se a decisão for parar, desliga as bobinas.
+    desligarMotor();
+  }
 
-  // --- Lógica para alternar o setpoint (para fins de teste) ---
-  if (millis() - ultimoTempoTroca >= INTERVALO_TROCA_MS) {
-    ultimoTempoTroca = millis();
+  // --- TAREFA 3: Lógica para alternar o setpoint ---
+  if (agora - ultimoTempoTroca >= INTERVALO_TROCA_MS) {
+    ultimoTempoTroca = agora;
     setpointAtualE15 = !setpointAtualE15;
-    setpoint_cm = setpointAtualE15 ? 15.0 : 10.0;
-    Serial.print("\n>>> NOVO SETPOINT DEFINIDO: ");
-    Serial.println(setpoint_cm);
-    Serial.println("-----------------------------------\n");
+    setpointCm = setpointAtualE15 ? 15.0 : 10.0;
+    Serial.print("Novo setpoint definido: ");
+    Serial.println(setpointCm);
   }
+  
+  // --- TAREFA 4: Impressão de dados ---
+  imprimirDados();
 }
 
 // Função que lê o sensor e aplica o filtro de Kalman
 float lerDistanciaCm() {
   float novaLeitura = lerDistanciaBruta();
   if (novaLeitura <= 0 || novaLeitura > 400) {
-    return distanciaAtual_cm; 
+    return distanciaAtualCm; 
   }
   return kalmanFilter.updateEstimate(novaLeitura);
 }
@@ -126,7 +132,6 @@ float lerDistanciaCm() {
 float lerDistanciaBruta() {
   digitalWrite(PIN_TRIG, LOW);
   delayMicroseconds(2);
-  // CORREÇÃO: trocado PIN_G por PIN_TRIG para enviar o pulso ultrassônico.
   digitalWrite(PIN_TRIG, HIGH);
   delayMicroseconds(10);
   digitalWrite(PIN_TRIG, LOW);
@@ -134,7 +139,7 @@ float lerDistanciaBruta() {
   return (duracao * 0.0343) / 2.0;
 }
 
-// Função para desligar as bobinas do motor, economizando energia e reduzindo o aquecimento
+// Função para desligar as bobinas do motor e economizar energia
 void desligarMotor() {
   digitalWrite(4, LOW);
   digitalWrite(5, LOW);
@@ -142,14 +147,20 @@ void desligarMotor() {
   digitalWrite(7, LOW);
 }
 
-// Função para imprimir os dados na Serial para monitoramento e plotagem
+// Função para imprimir os dados na Serial para monitoramento
 void imprimirDados() {
   static unsigned long ultimoPrintMs = 0;
-  if (millis() - ultimoPrintMs > 200) { 
+  if (millis() - ultimoPrintMs > 100) { 
     ultimoPrintMs = millis();
-    Serial.print("Setpoint: ");
-    Serial.print(setpoint_cm, 2);
-    Serial.print(" cm, Distancia Atual: ");
-    Serial.println(distanciaAtual_cm, 2);
+    Serial.print("Tempo:");
+    Serial.print(millis() / 1000.0, 3);
+    Serial.print(", Setpoint:");
+    Serial.print(setpointCm, 2);
+    Serial.print(", Distancia:");
+    Serial.print(distanciaAtualCm, 2);
+    Serial.print(", Velocidade_RPM:");
+    Serial.print(velocidadeAtualRpm);
+    Serial.print(", Direcao:");
+    Serial.println(direcaoMotor);
   }
 }

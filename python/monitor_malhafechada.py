@@ -10,11 +10,10 @@ import csv
 timestamps = []
 setpoints = []
 actuals = []
-velocities = []
+control_signals = []
 running = True
 
 # --- Cria um Lock para sincronizar o acesso às listas ---
-# Isso previne erros de "race condition" entre a thread de leitura e a de plotagem.
 data_lock = threading.Lock()
 
 # --- Função para ler os dados da porta serial ---
@@ -24,32 +23,36 @@ def read_serial(ser):
     Usa um lock para adicionar dados às listas de forma segura.
     """
     global running
+    print("Thread de leitura iniciada. Aguardando dados do Arduino...")
     while running:
         try:
             # Tenta ler uma linha da porta serial
             line = ser.readline().decode('utf-8', errors='ignore').strip()
-            if not line:
-                continue
+            
+            # --- DEBUG: Imprime tudo que chega da serial ---
+            if line:
+                print(f"[SERIAL] {line}")
 
             # Expressão regular para extrair os 4 valores da string
-            # Ex: "Tempo:12.345, Setpoint:15.00, Distancia:14.98, RPM:5.12"
-            match = re.search(r"Tempo:([-\d.]+), Setpoint:([-\d.]+), Distancia:([-\d.]+), RPM:([-\d.]+)", line)
+            # Ex: "Tempo:12.345, Setpoint:15.00, Distancia:14.98, SinalControle_RPM:5.12"
+            match = re.search(r"Tempo:([-\d.]+), Setpoint:([-\d.]+), Distancia:([-\d.]+), SinalControle_RPM:([-\d.]+)", line)
             
             if match:
-                # Extrai os 4 valores capturados pela regex
-                t, sp, ac, vel = map(float, match.groups())
+                # --- DEBUG: Informa que a linha foi reconhecida ---
+                print(" -> Formato reconhecido. Processando dados.")
                 
-                # --- Usa o Lock para garantir a escrita atômica nas listas ---
-                # O 'with' garante que o lock seja liberado mesmo se ocorrer um erro.
+                # Extrai os 4 valores capturados pela regex
+                t, sp, ac, cs = map(float, match.groups())
+                
+                # Usa o Lock para garantir a escrita atômica nas listas
                 with data_lock:
                     timestamps.append(t)
                     setpoints.append(sp)
                     actuals.append(ac)
-                    velocities.append(vel)
-            else:
-                # Imprime a linha se ela não corresponder ao formato esperado (para depuração)
-                if line and "Inicializando" not in line and "Iniciado" not in line:
-                    print(f"Linha não reconhecida: {line}")
+                    control_signals.append(cs)
+            elif line:
+                # --- DEBUG: Informa que a linha não foi reconhecida ---
+                print(" -> Formato NÃO reconhecido.")
 
         except serial.SerialException as e:
             print(f"Erro de leitura serial: {e}. Encerrando...")
@@ -62,34 +65,27 @@ def read_serial(ser):
 def plot_realtime():
     """
     Plota os dados em tempo real em uma janela do Matplotlib.
-    Usa um lock para copiar os dados das listas de forma segura.
     """
-    # --- ALTERAÇÃO: Declaração 'global' movida para o início da função ---
     global running
     
-    plt.ion() # Ativa o modo interativo
+    plt.ion()
     fig, ax1 = plt.subplots(figsize=(12, 7))
-    fig.canvas.manager.set_window_title('Monitoramento em Tempo Real do Controle PID')
+    fig.canvas.manager.set_window_title('Monitoramento em Tempo Real do Controle em Malha Fechada')
     
-    # Cria um segundo eixo Y que compartilha o mesmo eixo X
     ax2 = ax1.twinx()
 
     while running:
-        # --- Copia os dados de forma segura usando o lock ---
         with data_lock:
-            # Copia os dados para evitar mantê-los travados durante a plotagem,
-            # o que poderia bloquear a thread de leitura por muito tempo.
+            # Copia os dados para evitar mantê-los travados durante a plotagem
             ts_copy = list(timestamps)
             sp_copy = list(setpoints)
             ac_copy = list(actuals)
-            vel_copy = list(velocities)
+            cs_copy = list(control_signals)
 
-        # Só tenta plotar se houver dados
         if ts_copy:
             ax1.clear()
             ax2.clear()
 
-            # Plotar Distância e Setpoint no eixo Y primário (ax1)
             ax1.plot(ts_copy, sp_copy, 'r--', label='Setpoint (cm)')
             ax1.plot(ts_copy, ac_copy, 'b-', linewidth=2, label='Distância Atual (cm)')
             ax1.set_xlabel('Tempo (s)')
@@ -97,34 +93,35 @@ def plot_realtime():
             ax1.tick_params(axis='y', labelcolor='b')
             ax1.grid(True, which='both', linestyle='--', linewidth=0.5)
             
-            # Plotar RPM no eixo Y secundário (ax2)
-            ax2.plot(ts_copy, vel_copy, 'g:', label='RPM do Motor')
-            ax2.set_ylabel('RPM', color='g')
+            ax2.plot(ts_copy, cs_copy, 'g:', label='Sinal de Controle (RPM)')
+            ax2.set_ylabel('Sinal de Controle (RPM)', color='g')
             ax2.tick_params(axis='y', labelcolor='g')
             
-            # Unificar as legendas de ambos os eixos em um único local
             lines1, labels1 = ax1.get_legend_handles_labels()
             lines2, labels2 = ax2.get_legend_handles_labels()
             ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
 
-            plt.title('Desempenho do Controlador PID')
-            fig.tight_layout() # Ajusta o plot para evitar sobreposição de labels
+            plt.title('Desempenho do Controlador')
+            fig.tight_layout()
         
         try:
-            plt.pause(0.1) # Pausa para permitir que a GUI atualize e a leitura continue
+            plt.pause(0.1)
+            # Verifica se a janela de plotagem ainda está aberta
+            if not plt.fignum_exists(fig.number):
+                print("Janela de plotagem fechada. Encerrando...")
+                running = False
         except Exception:
-            # Se a janela for fechada, o plt.pause() pode dar erro.
-            print("Janela de plotagem fechada. Encerrando...")
+            # Captura outros erros que podem ocorrer ao fechar a janela
             running = False
             break
             
-    plt.ioff() # Desativa o modo interativo
+    plt.ioff()
+    print("Loop de plotagem encerrado.")
 
-# --- Função principal para iniciar as threads e gerenciar o programa ---
+# --- Função principal ---
 def main():
     global running
     
-    # --- Configuração da Porta Serial ---
     port = sys.argv[1] if len(sys.argv) > 1 else input("Porta serial (ex: COM3 ou /dev/ttyUSB0): ")
     baud = int(sys.argv[2]) if len(sys.argv) > 2 else 9600
 
@@ -133,38 +130,33 @@ def main():
         print(f"Conectado à porta {port} com baud rate {baud}.")
     except serial.SerialException as e:
         print(f"Erro ao abrir a porta serial {port}: {e}")
-        print("Verifique se a porta não está em uso por outro programa e se você tem permissão.")
         sys.exit(1)
 
-    # Aguarda a inicialização da conexão serial e do Arduino
+    print("Aguardando 2 segundos para o Arduino inicializar...")
     time.sleep(2)
+    ser.flushInput() # Limpa qualquer dado residual na porta serial
     
-    # Inicia a thread de leitura da serial
     read_thread = threading.Thread(target=read_serial, args=(ser,))
-    read_thread.daemon = True # Permite que o programa principal saia mesmo se a thread estiver rodando
+    read_thread.daemon = True
     read_thread.start()
 
-    # Inicia a função de plotagem na thread principal
     plot_realtime()
 
     # --- Bloco de Encerramento ---
-    # Este código executa quando o loop de plotagem termina (seja por fechar a janela ou Ctrl+C)
     running = False
     print("Sinal de encerramento enviado para a thread de leitura.")
-    read_thread.join(timeout=2) # Aguarda a thread de leitura terminar
+    read_thread.join(timeout=2)
     
     if ser.is_open:
         ser.close()
         print("Porta serial fechada.")
 
-    # Salva os dados coletados em um arquivo CSV
     if timestamps:
-        output_filename = 'saida_pid.csv'
+        output_filename = 'saida_malhafechada.csv'
         with open(output_filename, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['tempo', 'setpoint', 'distancia', 'rpm'])
-            # Usa zip para garantir que os dados de cada linha correspondam
-            data_to_save = zip(timestamps, setpoints, actuals, velocities)
+            writer.writerow(['tempo', 'setpoint', 'distancia', 'sinal_controle_rpm'])
+            data_to_save = zip(timestamps, setpoints, actuals, control_signals)
             writer.writerows(data_to_save)
         print(f'Leitura finalizada. Dados salvos em {output_filename}')
     else:
