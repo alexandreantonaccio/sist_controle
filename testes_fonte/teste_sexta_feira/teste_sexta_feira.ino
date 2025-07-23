@@ -20,9 +20,9 @@ double distanciaAtual; // O valor medido (filtrado)
 double rpmSaida;       // A saída do PID (velocidade do motor em RPM)
 
 // --- Constantes de Sintonia do PID (Ganhos) ---
-double Kp = 1.129;
-double Ki = 0.414;
-double Kd = 0.340;
+double Kp = 1.4727;
+double Ki = 0.3982;
+double Kd = 0.0;
 
 // --- Parâmetros de Controle Adicionais ---
 const float ZONA_MORTA_CM = 0.1; // Se o erro for menor que isso, o motor para.

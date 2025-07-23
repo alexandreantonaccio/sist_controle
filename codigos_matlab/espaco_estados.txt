@@ -1,0 +1,198 @@
+% =========================================================================
+% SINTONIZAÇÃO DE PID PARA SISTEMA MASSA-MOLA VIA MATLAB (VERSÃO ESTÁVEL)
+% =========================================================================
+% Este script modela um sistema físico composto por duas massas, uma mola
+% e um amortecedor. O objetivo é controlar a posição da segunda massa
+% com um tempo de estabilização definido.
+%
+% A sintonia dos ganhos PID (Kp, Ki, Kd) é feita usando a função 'pidtune'
+% para atender a uma meta de frequência de crossover, que controla a rapidez
+% da resposta do sistema.
+%
+% Autor: Gemini
+% Data: 22/07/2024
+% =========================================================================
+
+clear;
+clc;
+close all;
+
+%% --- 1. PARÂMETROS DO SISTEMA (FÍSICOS E DE CONTROLE) ---
+% Estes parâmetros são CRUCIAIS e devem ser estimados ou medidos a
+% partir do seu sistema físico real para uma sintonia precisa.
+
+% Parâmetros do Motor e Mecanismo
+RPM_MAXIMO = 60;            % RPM máximo do motor
+CM_POR_REVOLUCAO = 5;       % Quantos cm a MASSA 1 avança por revolução do motor << AJUSTE
+
+% Parâmetros Físicos do Sistema Massa-Mola
+m2 = 0.090;   % Massa do segundo objeto: 90 gramas = 0.090 kg
+
+% Calculado a partir do teste: F = m*g = 0.090 * 9.81 = 0.8829 N
+% Deslocamento x = 1.1 cm = 0.011 m
+% k = F/x = 0.8829 / 0.011
+k = 80.26;  % Constante da mola (em N/m)
+
+% Fator de Amortecimento
+% Representa o atrito e a perda de energia na mola. É um valor difícil
+% de medir, então começamos com um valor pequeno.
+b = 1.0;      % Coeficiente de amortecimento (em Ns/m) << AJUSTE SE NECESSÁRIO
+
+% Parâmetros do Loop de Controle (do Arduino)
+INTERVALO_LEITURA_S = 0.050; % 50 ms, o mesmo que myPID.SetSampleTime()
+
+fprintf('Parâmetros do sistema definidos.\n');
+fprintf('  - Massa m2: %.3f kg\n', m2);
+fprintf('  - Constante da mola k: %.2f N/m\n', k);
+fprintf('  - Coeficiente de amortecimento b: %.2f Ns/m\n', b);
+
+%% --- 2. MODELAGEM DO SISTEMA (FUNÇÃO DE TRANSFERÊNCIA COM AMORTECIMENTO) ---
+% A função de transferência agora inclui o termo de amortecimento 'b'.
+% P(s) = k / (m2*s^3 + b*s^2 + k*s)
+
+numerador = [k];
+denominador = [m2, b, k, 0];
+planta_continua_tf = tf(numerador, denominador);
+planta_continua_tf.InputName = 'Velocidade Massa 1 (cm/s)';
+planta_continua_tf.OutputName = 'Posicao Massa 2 (cm)';
+
+fprintf('\nFunção de Transferência da planta P(s) com amortecimento criada:\n');
+disp(planta_continua_tf);
+
+%% --- 3. SINTONIA AUTOMÁTICA DO PID (COM META DE FREQUÊNCIA DE CROSSOVER) ---
+% Usamos 'pidtune' para atingir uma meta de frequência de crossover, que
+% está diretamente relacionada à rapidez da resposta.
+
+fprintf('\nIniciando a sintonia do controlador PID com pidtune...\n');
+
+% *** ALTERAÇÃO PRINCIPAL: Definindo a meta de desempenho ***
+% Em vez de 'SettlingTime', definimos a 'CrossoverFrequency'.
+% Aumente este valor para uma resposta mais rápida.
+% Diminua para uma resposta mais lenta e suave.
+frequencia_crossover_desejada = 1.5; % em rad/s << AJUSTE AQUI
+
+% Usamos pidtuneOptions para definir a meta
+opcoes_de_sintonia = pidtuneOptions('CrossoverFrequency', frequencia_crossover_desejada);
+
+% Sintonizamos o PID passando o objeto de opções
+[controlador_pid, info] = pidtune(planta_continua_tf, 'pid', opcoes_de_sintonia);
+
+fprintf('Sintonia concluída.\n');
+fprintf('  - Frequência de Crossover Obtida: %.2f rad/s (Alvo: %.2f rad/s)\n', info.CrossoverFrequency, frequencia_crossover_desejada);
+% A linha abaixo foi removida pois causava erro em algumas versões do MATLAB
+% fprintf('  - Tempo de Estabilização Estimado: %.2f segundos\n', info.SettlingTime);
+fprintf('  - Margem de Fase Obtida: %.2f graus\n', info.PhaseMargin);
+
+% Extraindo os ganhos calculados
+Kp = controlador_pid.Kp;
+Ki = controlador_pid.Ki;
+Kd = controlador_pid.Kd;
+
+fprintf('\n====================================================\n');
+fprintf('GANHOS PID SINTONIZADOS (PARA RESPOSTA RÁPIDA):\n');
+fprintf('  Kp = %.4f\n', Kp);
+fprintf('  Ki = %.4f\n', Ki);
+fprintf('  Kd = %.4f\n', Kd);
+fprintf('====================================================\n\n');
+
+
+%% --- 4. PREPARAÇÃO PARA A SIMULAÇÃO ---
+% Convertendo a função de transferência para Espaço de Estados para a simulação
+planta_ss = ss(planta_continua_tf);
+
+% Discretizando o modelo para a simulação digital
+planta_discreta = c2d(planta_ss, INTERVALO_LEITURA_S);
+Ad = planta_discreta.A;
+Bd = planta_discreta.B;
+Cd = planta_discreta.C;
+
+%% --- 5. SIMULAÇÃO DO SISTEMA EM MALHA FECHADA ---
+% Verificamos se os ganhos encontrados atendem à meta de desempenho.
+
+tempo_total = 25; % Aumentado para ver a estabilização completa
+t = 0:INTERVALO_LEITURA_S:tempo_total;
+
+% O setpoint muda de 10 para 15 em t=5s para testar a meta
+setpoint = 10 * ones(size(t));
+setpoint(t > 5) = 15;
+
+% Inicialização dos vetores da simulação
+% Condição inicial: sistema em repouso no setpoint inicial de 10cm
+num_states = size(Ad, 1);
+estados = zeros(num_states, length(t));
+% Tenta iniciar no estado de equilíbrio para y=10
+try
+    estados(:, 1) = pinv(Cd) * 10; 
+catch
+    % Se pinv falhar, inicia em zero
+    estados(:, 1) = zeros(num_states, 1);
+end
+
+
+saida_y = zeros(size(t));
+saida_y(1) = Cd * estados(:, 1);
+
+erro_integral = 0;
+saida_y_anterior = saida_y(1);
+saida_rpm = zeros(size(t));
+
+% Loop de simulação
+for k = 1:length(t)-1
+    % 1. Calcular erro atual
+    erro = setpoint(k) - saida_y(k);
+
+    % 2. Termo Integral
+    erro_integral = erro_integral + erro * INTERVALO_LEITURA_S;
+
+    % 3. Termo Derivativo sobre a MEDIÇÃO
+    derivada_medicao = (saida_y(k) - saida_y_anterior) / INTERVALO_LEITURA_S;
+
+    % 4. Calcular saída do PID
+    velocidade_m1_cmd = Kp * erro + Ki * erro_integral - Kd * derivada_medicao;
+
+    % 5. Converter para RPM e Saturar
+    rpm_calculado = (velocidade_m1_cmd / CM_POR_REVOLUCAO) * 60;
+    saida_rpm(k) = max(-RPM_MAXIMO, min(RPM_MAXIMO, rpm_calculado));
+    
+    velocidade_real_m1 = (saida_rpm(k) / 60) * CM_POR_REVOLUCAO;
+
+    % 6. Atualizar o estado do sistema
+    estados(:, k+1) = Ad * estados(:, k) + Bd * velocidade_real_m1;
+    saida_y(k+1) = Cd * estados(:, k+1);
+
+    % 7. Guardar valores para a próxima iteração
+    saida_y_anterior = saida_y(k);
+end
+saida_rpm(end) = saida_rpm(end-1);
+
+%% --- 6. VISUALIZAÇÃO DOS RESULTADOS ---
+figure('Name', 'Simulação do Sistema Massa-Mola Controlado (Resposta Rápida)');
+
+% Plot das Posições
+subplot(2, 1, 1);
+plot(t, saida_y, 'b-', 'LineWidth', 2.5, 'DisplayName', 'Posição Massa 2 (Medida)');
+hold on;
+plot(t, setpoint, 'r--', 'LineWidth', 1.5, 'DisplayName', 'Setpoint');
+% Adicionando linhas para visualizar o tempo de estabilização
+yline(15 * 1.02, 'g:', 'DisplayName', 'Limite +2%');
+yline(15 * 0.98, 'g:');
+xline(5, 'k:', 'DisplayName', 'Mudança de Setpoint');
+
+grid on;
+title('Resposta do Sistema (Sintonia por Frequência de Crossover)');
+xlabel('Tempo (s)');
+ylabel('Distância (cm)');
+legend('show', 'Location', 'best');
+
+% Plot da Saída de Controle (RPM)
+subplot(2, 1, 2);
+plot(t, saida_rpm, 'k-', 'LineWidth', 2);
+hold on;
+plot(t, RPM_MAXIMO*ones(size(t)), 'g:');
+plot(t, -RPM_MAXIMO*ones(size(t)), 'g:');
+grid on;
+title('Sinal de Controle (Saída do PID)');
+xlabel('Tempo (s)');
+ylabel('Velocidade do Motor (RPM)');
+legend('RPM Calculado', 'RPM Máximo');
+ylim([-RPM_MAXIMO-10, RPM_MAXIMO+10]);
