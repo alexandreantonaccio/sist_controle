@@ -41,4 +41,4 @@ def plotar_grafico_completo(caminho_ficheiro, nome_saida='grafico_completo_pid.p
 # --- Executar a função de plotagem ---
 if __name__ == "__main__":
     # Substitua 'saida_pid.txt' pelo nome do seu ficheiro se for diferente
-    plotar_grafico_completo('saida.txt')
+    plotar_grafico_completo('saida_pid.csv')
